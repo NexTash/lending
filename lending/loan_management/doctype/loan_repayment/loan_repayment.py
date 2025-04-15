@@ -1731,6 +1731,7 @@ class LoanRepayment(AccountsController):
 		from lending.loan_management.doctype.loan_restructure.loan_restructure import (
 			create_loan_repayment,
 		)
+		from erpnext.accounts.general_ledger import process_debit_credit_difference
 
 		if self.repayment_type == "Charges Waiver":
 			payable_charges = self.total_charges_payable - self.total_charges_paid
@@ -1745,8 +1746,45 @@ class LoanRepayment(AccountsController):
 			return
 
 		gle_map = self.get_gl_map()
-		if gle_map:
-			make_gl_entries(gle_map, cancel=cancel, adv_adj=adv_adj)
+
+		# Reverse GL entries if custom_is_brower == 1
+		if self.custom_is_browwer == 1:
+			reversed_gle_map = []
+			for entry in gle_map:
+				# Skip reversing for interest accounts
+				if "interest" not in entry["account"].lower():
+					reversed_gle_map.append({
+						"account": entry["account"],
+						"against": entry["against"],
+						"debit": entry["credit"],  # Swap debit with credit
+						"credit": entry["debit"],  # Swap credit with debit
+						"debit_in_account_currency": entry["credit_in_account_currency"],
+						"credit_in_account_currency": entry["debit_in_account_currency"],
+						"against_voucher_type": entry["against_voucher_type"],
+						"against_voucher": entry["against_voucher"],
+						"remarks": entry["remarks"],
+						"cost_center": entry["cost_center"],
+						"posting_date": entry["posting_date"],
+						"company": entry["company"],
+      					"voucher_type": "Loan Repayment",  # Add voucher_type
+                    	"voucher_no": self.name,# Ensure company is included
+					})
+				else:
+					reversed_gle_map.append(entry)  # Keep interest accounts unchanged
+
+			gle_map = reversed_gle_map
+
+		# Convert dictionaries to objects
+		gl_entries = []
+		for entry in gle_map:
+			gl_entry = frappe._dict(entry)  # Convert dictionary to object
+			gl_entries.append(gl_entry)
+
+		# Validate and balance GL entries
+		process_debit_credit_difference(gl_entries)
+
+		if gl_entries:
+			make_gl_entries(gl_entries, cancel=cancel, adv_adj=adv_adj)
 
 	def get_gl_map(self):
 		precision = cint(frappe.db.get_default("currency_precision")) or 2
@@ -2010,6 +2048,7 @@ class LoanRepayment(AccountsController):
 						"party": payment_party if not is_waiver_entry else "",
 						"party_type": payment_party_type if not is_waiver_entry else "",
 						"posting_date": getdate(self.posting_date),
+      					"company": self.company,
 					}
 				)
 			)
@@ -2027,6 +2066,7 @@ class LoanRepayment(AccountsController):
 					"remarks": _(remarks),
 					"cost_center": self.cost_center,
 					"posting_date": getdate(self.posting_date),
+     				"company": self.company,
 				}
 			)
 		)
